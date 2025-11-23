@@ -1,0 +1,5 @@
+{
+  "name": "ŒufMaster Pro",
+  "description": "Une application complète pour la gestion de ventes de plateaux d'œufs, incluant le suivi des stocks, l'historique des ventes et des analyses intelligentes via Gemini.",
+  "requestFramePermissions": []
+}
