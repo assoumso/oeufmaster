@@ -1,6 +1,5 @@
-
 import React, { useState, useEffect, useRef } from 'react';
-import { AppState, View, Sale, InventoryLog, PaymentStatus, EggCaliber, Customer, Expense, IncomingOrder } from './types';
+import { AppState, View, Sale, InventoryLog, PaymentStatus, EggCaliber, Customer, Expense, IncomingOrder, UserRole } from './types';
 import Sidebar from './components/Sidebar';
 import Dashboard from './components/Dashboard';
 import Sales from './components/Sales';
@@ -9,9 +8,12 @@ import Customers from './components/Customers';
 import Expenses from './components/Expenses';
 import Orders from './components/Orders';
 import Reports from './components/Reports';
+import UserManagement from './components/UserManagement';
 import CustomerOrder from './components/CustomerOrder';
-import { Menu, ShieldAlert, ExternalLink, RefreshCw, WifiOff, CloudOff, Bell } from 'lucide-react';
-import { db } from './services/firebase';
+import Login from './components/Login';
+import { Menu, ShieldAlert, ExternalLink, RefreshCw, WifiOff, CloudOff, Bell, Shield } from 'lucide-react';
+import { db, auth } from './services/firebase';
+import { onAuthStateChanged, signOut, User } from 'firebase/auth';
 import { 
   collection, 
   onSnapshot, 
@@ -24,6 +26,7 @@ import {
   addDoc,
   updateDoc,
   writeBatch,
+  deleteDoc,
   where,
   getDocs,
   getDoc
@@ -33,6 +36,11 @@ const App: React.FC = () => {
   // ROUTING LOGIC (Simple query param check)
   const urlParams = new URLSearchParams(window.location.search);
   const isOrderMode = urlParams.get('mode') === 'order';
+
+  // AUTH STATE
+  const [user, setUser] = useState<User | null>(null);
+  const [userRole, setUserRole] = useState<UserRole>('SELLER'); // Default role
+  const [authLoading, setAuthLoading] = useState(true);
 
   const [currentView, setCurrentView] = useState<View>('DASHBOARD');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -54,6 +62,64 @@ const App: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [permissionError, setPermissionError] = useState(false);
   const [notification, setNotification] = useState<string | null>(null);
+
+  // Helper pour traduire les erreurs Firebase
+  const translateFirebaseError = (error: any): string => {
+      const msg = String(error?.message || error?.code || '');
+      
+      if (msg.includes('permission-denied') || msg.includes('insufficient permissions')) {
+          return "Vous n'avez pas les droits nécessaires pour effectuer cette action.";
+      }
+      if (msg.includes('not-found')) {
+          return "L'élément que vous essayez de modifier ou supprimer n'existe plus.";
+      }
+      if (msg.includes('unavailable')) {
+          return "Service temporairement indisponible ou hors ligne.";
+      }
+      if (msg.includes('reads to be executed before all writes')) {
+          return "Erreur technique: Conflit de transaction. Veuillez réessayer.";
+      }
+      return msg; // Retourne le message d'origine si pas de traduction spécifique
+  };
+
+  // Auth & Profile Listener
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      setUser(currentUser);
+      if (currentUser) {
+        // Fetch or Create User Profile
+        const userDocRef = doc(db, "users", currentUser.uid);
+        const userDoc = await getDoc(userDocRef);
+
+        if (userDoc.exists()) {
+          setUserRole(userDoc.data().role as UserRole);
+        } else {
+          // Create default profile for new user
+          const defaultRole: UserRole = 'SELLER';
+          // Exception: If it's the specific admin email, force ADMIN
+          const roleToSet = currentUser.email?.includes('admin@') ? 'ADMIN' : defaultRole;
+          
+          await setDoc(userDocRef, {
+            email: currentUser.email,
+            role: roleToSet,
+            createdAt: new Date().toISOString()
+          });
+          setUserRole(roleToSet);
+        }
+      }
+      setAuthLoading(false);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  const handleLogout = async () => {
+    try {
+      await signOut(auth);
+      setUserRole('SELLER');
+    } catch (error) {
+      console.error("Error signing out:", error);
+    }
+  };
 
   // Network Status Listener
   useEffect(() => {
@@ -89,9 +155,10 @@ const App: React.FC = () => {
 
   // Initialize Firebase Listeners
   useEffect(() => {
-    // If in order mode, we might not need all listeners, but for simplicity we keep them or exit early if strict auth was needed
-    // However, the prompt implies "admin receives notification", so admin app is running separately.
-    // If THIS instance is the client, we don't need listeners.
+    // If not logged in and not in order mode, don't load data
+    if (!user && !isOrderMode) return;
+
+    // If in order mode, we skip heavy listeners (or adjust rules)
     if (isOrderMode) {
       setLoading(false);
       return;
@@ -99,7 +166,7 @@ const App: React.FC = () => {
 
     const handleError = (error: any) => {
       // Safe log to avoid circular structure errors if error object is complex
-      console.error("Firebase Listener Error:", error?.code || error?.message || "Unknown error");
+      console.error("Firebase Listener Error:", String(error?.code || error?.message || "Unknown error"));
       if (error?.code === 'permission-denied') {
         setPermissionError(true);
         setLoading(false);
@@ -138,10 +205,24 @@ const App: React.FC = () => {
     // Customers Listener
     const customersQuery = query(collection(db, "customers"), orderBy("name", "asc"));
     const unsubscribeCustomers = onSnapshot(customersQuery, { includeMetadataChanges: true }, (snapshot) => {
-      const customersData = snapshot.docs.map(doc => ({
-          id: doc.id,
-          ...doc.data()
-      })) as Customer[];
+      const customersData = snapshot.docs.map(doc => {
+          const data = doc.data();
+          // Conversion sécurisée de la date pour éviter les objets Timestamp (circular structure)
+          let formattedDate = undefined;
+          if (data.lastPurchaseDate) {
+              if (data.lastPurchaseDate.toDate) {
+                  formattedDate = data.lastPurchaseDate.toDate().toISOString();
+              } else {
+                  formattedDate = data.lastPurchaseDate;
+              }
+          }
+          
+          return {
+            id: doc.id,
+            ...data,
+            lastPurchaseDate: formattedDate
+          };
+      }) as Customer[];
       setCustomers(customersData);
     }, handleError);
 
@@ -222,14 +303,12 @@ const App: React.FC = () => {
       unsubscribeExpenses();
       unsubscribeOrders();
     };
-  }, [isOrderMode]);
+  }, [isOrderMode, user]); // Re-run when user changes
 
   // Handlers
   const handleNewSale = async (saleData: Omit<Sale, 'id' | 'date'>) => {
     try {
       // CONSTRUCTION MANUELLE DE L'OBJET
-      // Cela évite l'utilisation de JSON.stringify qui peut causer des erreurs circulaires
-      // et permet de s'assurer qu'aucun champ 'undefined' n'est envoyé à Firestore
       const safeSalePayload: any = {
         customerName: saleData.customerName || 'Client inconnu',
         caliber: saleData.caliber,
@@ -239,29 +318,22 @@ const App: React.FC = () => {
         status: saleData.status
       };
 
-      // N'ajouter customerId que s'il est défini et non vide
       if (saleData.customerId) {
         safeSalePayload.customerId = saleData.customerId;
       }
 
       const saleId = await runTransaction(db, async (transaction) => {
-        // --- ETAPE 1 : LECTURES (DOIVENT ETRE FAITES AVANT TOUTE ECRITURE) ---
-        
-        // 1.a Lecture du Stock
         const stockDocRef = doc(db, "settings", "general");
         const stockDoc = await transaction.get(stockDocRef);
         
         if (!stockDoc.exists()) throw new Error("Document de stock introuvable.");
 
-        // 1.b Lecture du Client (si applicable)
         let customerDoc = null;
         const customerRef = saleData.customerId ? doc(db, "customers", saleData.customerId) : null;
         if (customerRef) {
             customerDoc = await transaction.get(customerRef);
         }
 
-        // --- ETAPE 2 : LOGIQUE METIER ---
-        
         const data = stockDoc.data();
         const currentStocks = data.stocks || {};
         const caliberStock = currentStocks[saleData.caliber] || 0;
@@ -270,14 +342,10 @@ const App: React.FC = () => {
           throw new Error(`Stock insuffisant pour le calibre ${saleData.caliber}. Disponible: ${caliberStock}`);
         }
 
-        // --- ETAPE 3 : ECRITURES ---
-
-        // 3.a Mise à jour du Stock
         const newStocks = { ...currentStocks };
         newStocks[saleData.caliber] = caliberStock - saleData.quantity;
         transaction.update(stockDocRef, { stocks: newStocks });
 
-        // 3.b Mise à jour du Client
         if (customerRef && customerDoc && customerDoc.exists()) {
             const cData = customerDoc.data();
             const newTotalPurchases = (cData.totalPurchases || 0) + saleData.totalPrice;
@@ -292,14 +360,12 @@ const App: React.FC = () => {
             });
         }
 
-        // 3.c Création de la Vente
         const newSaleRef = doc(collection(db, "sales"));
         transaction.set(newSaleRef, {
           ...safeSalePayload,
           date: Timestamp.now()
         });
 
-        // 3.d Création du Log de stock
         const newLogRef = doc(collection(db, "inventory_logs"));
         transaction.set(newLogRef, {
           date: Timestamp.now(),
@@ -313,12 +379,139 @@ const App: React.FC = () => {
       });
       return saleId;
     } catch (error: any) {
-      // Log du message uniquement pour éviter les erreurs circulaires du navigateur
-      const errorMsg = error?.message || "Erreur inconnue";
-      console.error("Erreur Transaction Vente:", errorMsg);
+      const errorMsg = translateFirebaseError(error);
+      console.error("Erreur Transaction Vente:", error?.message || String(error));
       alert("Erreur lors de l'enregistrement de la vente: " + errorMsg);
       return null;
     }
+  };
+
+  // --- SUPPRESSION D'UNE VENTE ---
+  const handleDeleteSale = async (saleId: string) => {
+    if (!window.confirm("Êtes-vous sûr de vouloir supprimer cette vente ? Le stock sera restauré et la dette client annulée.")) return;
+
+    try {
+        await runTransaction(db, async (transaction) => {
+            // --- 1. LECTURES (Toutes les lectures doivent être faites AVANT les écritures) ---
+            
+            // A. Lire la vente
+            const saleRef = doc(db, "sales", saleId);
+            const saleDoc = await transaction.get(saleRef);
+            if (!saleDoc.exists()) throw new Error("Vente introuvable");
+            const sale = saleDoc.data() as Sale;
+
+            // B. Lire le stock
+            const stockDocRef = doc(db, "settings", "general");
+            const stockDoc = await transaction.get(stockDocRef);
+
+            // C. Lire le client (si applicable)
+            let customerDoc = null;
+            const customerRef = sale.customerId ? doc(db, "customers", sale.customerId) : null;
+            if (customerRef) {
+                customerDoc = await transaction.get(customerRef);
+            }
+
+            // --- 2. LOGIQUE & CALCULS ---
+
+            // Calcul Stock
+            let newStocks = {};
+            if (stockDoc.exists()) {
+                const currentStocks = stockDoc.data().stocks || {};
+                newStocks = { ...currentStocks };
+                const safeCaliber = sale.caliber || EggCaliber.MEDIUM;
+                const safeQuantity = Number(sale.quantity) || 0;
+                newStocks[safeCaliber] = (newStocks[safeCaliber] || 0) + safeQuantity;
+            }
+
+            // --- 3. ECRITURES ---
+
+            // A. Mise à jour Stock
+            if (stockDoc.exists()) {
+                transaction.update(stockDocRef, { stocks: newStocks });
+            }
+
+            // B. Mise à jour Client
+            if (customerRef && customerDoc && customerDoc.exists()) {
+                const cData = customerDoc.data();
+                const newTotal = Math.max(0, (cData.totalPurchases || 0) - sale.totalPrice);
+                
+                let newDebt = cData.debt || 0;
+                // Si la vente était en attente, on retire la dette associée
+                if (sale.status === PaymentStatus.PENDING) {
+                    newDebt = Math.max(0, newDebt - sale.totalPrice);
+                } else if ((sale as any).status === 'PARTIAL') {
+                        const amountPaid = (sale as any).amountPaid || 0;
+                        const remainingOnSale = sale.totalPrice - amountPaid;
+                        newDebt = Math.max(0, newDebt - remainingOnSale);
+                }
+                
+                transaction.update(customerRef, {
+                    totalPurchases: newTotal,
+                    debt: newDebt
+                });
+            }
+
+            // C. Suppression Vente
+            transaction.delete(saleRef);
+
+            // D. Log de correction
+            const newLogRef = doc(collection(db, "inventory_logs"));
+            transaction.set(newLogRef, {
+                date: Timestamp.now(),
+                type: 'ADD',
+                caliber: sale.caliber || EggCaliber.MEDIUM,
+                quantity: Number(sale.quantity) || 0,
+                notes: `Correction: Annulation vente ${sale.customerName}`
+            });
+        });
+        setNotification("Vente supprimée avec succès");
+        setTimeout(() => setNotification(null), 3000);
+    } catch (error: any) {
+        alert("Erreur suppression: " + translateFirebaseError(error));
+    }
+  };
+
+  // --- MODIFICATION D'UNE VENTE (STATUS) ---
+  const handleUpdateSale = async (saleId: string, updates: Partial<Sale>) => {
+      try {
+          await updateDoc(doc(db, "sales", saleId), updates);
+          setNotification("Vente mise à jour");
+          setTimeout(() => setNotification(null), 3000);
+      } catch (error: any) {
+          alert("Erreur modification: " + translateFirebaseError(error));
+      }
+  };
+
+  // --- GESTION CLIENTS ---
+  const handleEditCustomer = async (customerId: string, data: Partial<Customer>) => {
+      try {
+          await updateDoc(doc(db, "customers", customerId), data);
+          setNotification("Client mis à jour");
+          setTimeout(() => setNotification(null), 3000);
+      } catch (error: any) {
+          alert("Erreur modification client: " + translateFirebaseError(error));
+      }
+  };
+
+  const handleDeleteCustomer = async (customerId: string) => {
+      if(!window.confirm("Supprimer ce client ? Son historique sera conservé dans les ventes mais la fiche sera supprimée.")) return;
+      try {
+          await deleteDoc(doc(db, "customers", customerId));
+          setNotification("Client supprimé");
+          setTimeout(() => setNotification(null), 3000);
+      } catch (error: any) {
+          alert("Erreur suppression client: " + translateFirebaseError(error));
+      }
+  };
+
+  // --- GESTION DEPENSES ---
+  const handleDeleteExpense = async (expenseId: string) => {
+      if(!window.confirm("Supprimer cette dépense ?")) return;
+      try {
+          await deleteDoc(doc(db, "expenses", expenseId));
+      } catch (error: any) {
+          alert("Erreur suppression dépense: " + translateFirebaseError(error));
+      }
   };
 
   const handleProcessOrder = async (orderId: string, action: 'APPROVE' | 'REJECT') => {
@@ -337,18 +530,15 @@ const App: React.FC = () => {
       try {
           await handleNewSale({
               customerName: order.customerName,
-              // We don't link customer ID automatically for web orders yet, 
-              // unless we implemented a search by phone.
               caliber: order.caliber,
               quantity: order.quantity,
               unitPrice: unitPrice,
               totalPrice: order.quantity * unitPrice,
-              status: PaymentStatus.PAID // Assume online orders are paid or will be paid on delivery. Could be PENDING.
+              status: PaymentStatus.PAID 
           });
-          // Update order status
           await updateDoc(doc(db, "incoming_orders", orderId), { status: 'PROCESSED' });
       } catch (e: any) {
-          console.error("Error processing web order:", e?.message || "Unknown error");
+          console.error("Error processing web order:", String(e?.message || "Unknown error"));
       }
   };
 
@@ -385,7 +575,7 @@ const App: React.FC = () => {
         });
       });
     } catch (error: any) {
-      const errorMsg = error?.message || "Erreur inconnue";
+      const errorMsg = translateFirebaseError(error);
       alert("Erreur de mise à jour: " + errorMsg);
     }
   };
@@ -399,59 +589,57 @@ const App: React.FC = () => {
           });
           return docRef.id;
       } catch (error: any) {
-          console.error("Error adding customer:", error?.message || "Unknown error");
+          console.error("Error adding customer:", String(error?.message || "Unknown error"));
           return null;
       }
   };
 
   const handleCustomerPayment = async (customerId: string, amount: number) => {
       try {
-          // 1. Utilisation de l'état LOCAL pour une réponse instantanée
           const customer = customers.find(c => c.id === customerId);
           if (!customer) throw new Error("Client introuvable");
 
           const currentDebt = customer.debt || 0;
           const newDebt = Math.max(0, currentDebt - amount);
-
-          // 2. Identifier les ventes à solder (Logique locale)
+          
           const pendingSales = sales
-            .filter(s => s.customerId === customerId && s.status === PaymentStatus.PENDING)
-            .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()); // Du plus vieux au plus récent
+            .filter(s => s.customerId === customerId && (s.status === PaymentStatus.PENDING || (s as any).status === 'PARTIAL'))
+            .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
-          // 3. Préparer le Batch Firestore
           const batch = writeBatch(db);
           const customerRef = doc(db, "customers", customerId);
-          const salesToUpdateIds: string[] = [];
           
-          let remainingPayment = amount;
-
-          // a. Mise à jour Dette Client
           batch.update(customerRef, { debt: newDebt });
 
-          // b. Distribution du paiement sur les ventes
+          let remainingDebtToCover = newDebt;
+          
           pendingSales.forEach((sale) => {
-              if (remainingPayment >= sale.totalPrice) {
-                  // Si le paiement couvre cette vente, on la marque comme PAYÉE
-                  const saleRef = doc(db, "sales", sale.id);
-                  batch.update(saleRef, { status: PaymentStatus.PAID });
-                  salesToUpdateIds.push(sale.id);
-                  remainingPayment -= sale.totalPrice;
+              const saleTotal = sale.totalPrice;
+              const saleRef = doc(db, "sales", sale.id);
+
+              if (remainingDebtToCover <= 0) {
+                  batch.update(saleRef, { status: PaymentStatus.PAID, amountPaid: saleTotal });
+              } else {
+                  if (remainingDebtToCover >= saleTotal) {
+                      batch.update(saleRef, { status: PaymentStatus.PENDING, amountPaid: 0 });
+                      remainingDebtToCover -= saleTotal;
+                  } else {
+                      const amountPaidOnThisSale = saleTotal - remainingDebtToCover;
+                      batch.update(saleRef, { status: 'PARTIAL', amountPaid: amountPaidOnThisSale });
+                      remainingDebtToCover = 0;
+                  }
               }
           });
 
-          // 4. MISE A JOUR OPTIMISTE DE L'UI (Instantané)
-          setCustomers(prev => prev.map(c => c.id === customerId ? { ...c, debt: newDebt } : c));
-          setSales(prev => prev.map(s => salesToUpdateIds.includes(s.id) ? { ...s, status: PaymentStatus.PAID } : s));
-
-          // 5. Envoi au serveur
           await batch.commit();
           
           setNotification("Paiement enregistré !");
           setTimeout(() => setNotification(null), 3000);
 
       } catch (error: any) {
-        console.error("Error payment:", error?.message || "Unknown error");
-        alert("Erreur lors du paiement: " + (error?.message || "Erreur inconnue"));
+        const msg = translateFirebaseError(error);
+        console.error("Error payment:", String(error?.message || "Unknown error"));
+        alert("Erreur lors du paiement: " + msg);
       }
   };
 
@@ -462,16 +650,30 @@ const App: React.FC = () => {
             date: Timestamp.fromDate(new Date(expense.date))
         });
     } catch (error: any) {
-        console.error("Error adding expense:", error?.message || "Unknown error");
+        console.error("Error adding expense:", String(error?.message || "Unknown error"));
     }
   };
 
-  // CLIENT MODE RENDER
+  // CLIENT MODE RENDER (Public)
   if (isOrderMode) {
      return <CustomerOrder />;
   }
 
-  // ADMIN MODE RENDER
+  // LOADING STATE
+  if (authLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-50">
+        <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-egg-600"></div>
+      </div>
+    );
+  }
+
+  // LOGIN RENDER (If not logged in)
+  if (!user) {
+    return <Login />;
+  }
+
+  // ADMIN MODE RENDER (If logged in)
   if (permissionError) {
     return (
       <div className="flex min-h-screen bg-gray-50 items-center justify-center p-4 font-sans">
@@ -489,13 +691,14 @@ const App: React.FC = () => {
           <div className="p-6 space-y-4">
             <p className="text-gray-600 text-sm leading-relaxed">
               L'application ne peut pas accéder à votre base de données <strong>BarakaSoft</strong>.
+              <br/>Connecté en tant que: <strong>{user.email}</strong>
             </p>
             <div className="flex flex-col gap-3 pt-2">
-              <a href="https://console.firebase.google.com/project/barakasoft/firestore/rules" target="_blank" rel="noreferrer" className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold transition-all shadow-md hover:shadow-lg">
-                <ExternalLink size={18} /> Configurer les règles Firebase
-              </a>
-              <button onClick={() => window.location.reload()} className="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 py-3 rounded-lg font-bold transition-all">
+              <button onClick={() => window.location.reload()} className="flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-lg font-bold transition-all">
                 <RefreshCw size={18} /> Réessayer
+              </button>
+              <button onClick={handleLogout} className="flex items-center justify-center gap-2 bg-gray-100 hover:bg-gray-200 text-gray-700 py-3 rounded-lg font-bold transition-all">
+                 Se déconnecter
               </button>
             </div>
           </div>
@@ -512,12 +715,25 @@ const App: React.FC = () => {
     );
   }
 
+  const viewLabels: Record<View, string> = {
+    'DASHBOARD': 'Tableau de bord',
+    'SALES': 'Point de Vente',
+    'ORDERS': 'Commandes Web',
+    'INVENTORY': 'Stock & Inventaire',
+    'CUSTOMERS': 'Clients',
+    'EXPENSES': 'Dépenses & Charges',
+    'REPORTS': 'Rapports & Stats',
+    'USERS': 'Utilisateurs'
+  };
+
   return (
-    <div className="flex min-h-screen bg-gray-50 text-gray-800 font-sans relative">
+    <div className="flex min-h-screen bg-gray-50 text-gray-800 font-sans relative pt-[env(safe-area-inset-top)]">
       <Sidebar 
         currentView={currentView} 
         onChangeView={setCurrentView} 
         pendingOrdersCount={incomingOrders.filter(o => o.status === 'PENDING').length}
+        onLogout={handleLogout}
+        userRole={userRole}
       />
       
       <main className="flex-1 flex flex-col h-screen overflow-hidden relative">
@@ -541,7 +757,7 @@ const App: React.FC = () => {
         )}
 
         {/* Mobile Header */}
-        <div className="md:hidden bg-white p-4 flex items-center justify-between border-b border-gray-200 print:hidden">
+        <div className="md:hidden bg-white p-4 flex items-center justify-between border-b border-gray-200 print:hidden sticky top-0 z-30">
            <div className="flex items-center gap-2 font-bold text-gray-800">
               <div className="w-8 h-8 bg-egg-500 rounded flex items-center justify-center text-white">Œ</div>
               ŒufMaster
@@ -554,15 +770,26 @@ const App: React.FC = () => {
         {/* Mobile Menu Dropdown */}
         {isMobileMenuOpen && (
           <div className="md:hidden bg-white border-b border-gray-200 absolute top-16 left-0 w-full z-50 shadow-lg">
-             {(['DASHBOARD', 'SALES', 'ORDERS', 'INVENTORY', 'CUSTOMERS', 'EXPENSES', 'REPORTS'] as View[]).map(v => (
-               <button 
-                key={v}
-                className="block w-full text-left p-4 hover:bg-gray-50"
-                onClick={() => { setCurrentView(v); setIsMobileMenuOpen(false); }}
-               >
-                 {v}
-               </button>
-             ))}
+             {(['DASHBOARD', 'SALES', 'ORDERS', 'INVENTORY', 'CUSTOMERS', 'EXPENSES', 'REPORTS', 'USERS'] as View[]).map(v => {
+               // Security check for menu items
+               if (v === 'USERS' && userRole !== 'ADMIN') return null;
+               
+               return (
+                <button 
+                  key={v}
+                  className="block w-full text-left p-4 hover:bg-gray-50 font-medium text-gray-800"
+                  onClick={() => { setCurrentView(v); setIsMobileMenuOpen(false); }}
+                >
+                  {viewLabels[v]}
+                </button>
+               );
+             })}
+             <button 
+               className="block w-full text-left p-4 hover:bg-red-50 font-medium text-red-600 border-t border-gray-100"
+               onClick={handleLogout}
+             >
+               Déconnexion
+             </button>
           </div>
         )}
 
@@ -576,6 +803,8 @@ const App: React.FC = () => {
                     customers={customers} 
                     onNewSale={handleNewSale}
                     onAddCustomer={handleAddCustomer}
+                    onDeleteSale={handleDeleteSale}
+                    onUpdateSale={handleUpdateSale}
                 />
             )}
             {currentView === 'ORDERS' && (
@@ -586,9 +815,25 @@ const App: React.FC = () => {
                 />
             )}
             {currentView === 'INVENTORY' && <Inventory stocks={stocks} logs={logs} onUpdateStock={handleUpdateStock} />}
-            {currentView === 'CUSTOMERS' && <Customers customers={customers} sales={sales} onAddCustomer={handleAddCustomer} onPayment={handleCustomerPayment} />}
-            {currentView === 'EXPENSES' && <Expenses expenses={expenses} onAddExpense={handleAddExpense} />}
+            {currentView === 'CUSTOMERS' && (
+                <Customers 
+                    customers={customers} 
+                    sales={sales} 
+                    onAddCustomer={handleAddCustomer} 
+                    onPayment={handleCustomerPayment}
+                    onEditCustomer={handleEditCustomer}
+                    onDeleteCustomer={handleDeleteCustomer}
+                />
+            )}
+            {currentView === 'EXPENSES' && (
+                <Expenses 
+                    expenses={expenses} 
+                    onAddExpense={handleAddExpense} 
+                    onDeleteExpense={handleDeleteExpense}
+                />
+            )}
             {currentView === 'REPORTS' && <Reports sales={sales} expenses={expenses} customers={customers} />}
+            {currentView === 'USERS' && user && <UserManagement currentUserUid={user.uid} />}
           </div>
         </div>
       </main>

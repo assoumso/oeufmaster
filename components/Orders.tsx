@@ -18,10 +18,10 @@ const Orders: React.FC<OrdersProps> = ({ orders, stocks, onProcessOrder }) => {
   const qrCodeUrl = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(orderUrl)}`;
 
   return (
-    <div className="flex flex-col xl:flex-row gap-6 h-[calc(100vh-140px)]">
+    <div className="flex flex-col xl:flex-row gap-6 h-auto xl:h-[calc(100vh-140px)]">
       
       {/* Left Column: QR Code & Instructions */}
-      <div className="w-full xl:w-1/4 bg-white p-6 rounded-xl shadow-sm border border-gray-100 text-center flex flex-col">
+      <div className="w-full xl:w-1/4 bg-white p-6 rounded-xl shadow-sm border border-gray-100 text-center flex flex-col shrink-0">
         <h3 className="font-bold text-gray-800 mb-2 flex items-center justify-center gap-2">
           <QrCode className="text-blue-600" /> Commande Client
         </h3>
@@ -50,7 +50,7 @@ const Orders: React.FC<OrdersProps> = ({ orders, stocks, onProcessOrder }) => {
       </div>
 
       {/* Right Column: Order Management */}
-      <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col">
+      <div className="flex-1 bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden flex flex-col h-[600px] xl:h-full">
         <div className="p-6 border-b border-gray-100 bg-gray-50 flex justify-between items-center">
             <h3 className="font-bold text-gray-800 flex items-center gap-2">
               <BellRing size={20} className={pendingOrders.length > 0 ? "text-red-500 animate-pulse" : "text-gray-400"} />

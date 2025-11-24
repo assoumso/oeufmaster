@@ -1,15 +1,17 @@
 import React from 'react';
-import { View } from '../types';
-import { LayoutDashboard, ShoppingCart, Package, Users, WalletCards, LogOut, Globe, BarChart3 } from 'lucide-react';
+import { View, UserRole } from '../types';
+import { LayoutDashboard, ShoppingCart, Package, Users, WalletCards, LogOut, Globe, BarChart3, ShieldCheck } from 'lucide-react';
 
 interface SidebarProps {
   currentView: View;
   onChangeView: (view: View) => void;
   pendingOrdersCount?: number;
+  onLogout: () => void;
+  userRole?: UserRole;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, pendingOrdersCount = 0 }) => {
-  const menuItems: { id: View; label: string; icon: any; badge?: number }[] = [
+const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, pendingOrdersCount = 0, onLogout, userRole }) => {
+  const menuItems: { id: View; label: string; icon: any; badge?: number; roles?: UserRole[] }[] = [
     { id: 'DASHBOARD', label: 'Tableau de bord', icon: LayoutDashboard },
     { id: 'SALES', label: 'Point de Vente', icon: ShoppingCart },
     { id: 'ORDERS', label: 'Commandes Web', icon: Globe, badge: pendingOrdersCount },
@@ -17,6 +19,7 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, pendingOrd
     { id: 'CUSTOMERS', label: 'Clients', icon: Users },
     { id: 'EXPENSES', label: 'Dépenses & Charges', icon: WalletCards },
     { id: 'REPORTS', label: 'Rapports & Stats', icon: BarChart3 },
+    { id: 'USERS', label: 'Utilisateurs', icon: ShieldCheck, roles: ['ADMIN'] },
   ];
 
   return (
@@ -28,11 +31,16 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, pendingOrd
         <div>
           <h1 className="font-bold text-gray-800 text-lg">ŒufMaster</h1>
           <p className="text-xs text-gray-500">Pro Edition</p>
+          {userRole && <span className="text-[10px] uppercase font-bold bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded">{userRole}</span>}
         </div>
       </div>
 
       <nav className="flex-1 p-4 space-y-2 overflow-y-auto">
         {menuItems.map((item) => {
+          if (item.roles && userRole && !item.roles.includes(userRole)) {
+            return null;
+          }
+
           const Icon = item.icon;
           const isActive = currentView === item.id;
           return (
@@ -60,7 +68,10 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, onChangeView, pendingOrd
       </nav>
 
       <div className="p-4 border-t border-gray-100">
-        <button className="w-full flex items-center gap-3 px-4 py-3 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors">
+        <button 
+          onClick={onLogout}
+          className="w-full flex items-center gap-3 px-4 py-3 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-xl transition-colors"
+        >
           <LogOut size={20} />
           <span>Déconnexion</span>
         </button>

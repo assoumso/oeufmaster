@@ -1,3 +1,4 @@
+
 export enum PaymentStatus {
   PAID = 'Payé',
   PENDING = 'En attente',
@@ -15,6 +16,7 @@ export interface Customer {
   id: string;
   name: string;
   phone: string;
+  residence?: string; // Nouveau champ
   type: 'RESELLER' | 'INDIVIDUAL' | 'RESTAURANT';
   totalPurchases: number;
   debt: number;
@@ -31,6 +33,7 @@ export interface Sale {
   unitPrice: number;
   totalPrice: number;
   status: PaymentStatus;
+  amountPaid?: number; // Pour les paiements partiels
 }
 
 export interface InventoryLog {
@@ -70,6 +73,16 @@ export interface IncomingOrder {
   status: 'PENDING' | 'PROCESSED' | 'REJECTED';
 }
 
+export type UserRole = 'ADMIN' | 'SELLER' | 'ACCOUNTANT';
+
+export interface UserProfile {
+  uid: string;
+  email: string;
+  role: UserRole;
+  createdAt: string;
+  displayName?: string;
+}
+
 export interface AppState {
   inventory: Record<string, number>;
   sales: Sale[];
@@ -78,4 +91,4 @@ export interface AppState {
   expenses: Expense[];
 }
 
-export type View = 'DASHBOARD' | 'SALES' | 'ORDERS' | 'INVENTORY' | 'CUSTOMERS' | 'EXPENSES' | 'REPORTS';
+export type View = 'DASHBOARD' | 'SALES' | 'ORDERS' | 'INVENTORY' | 'CUSTOMERS' | 'EXPENSES' | 'REPORTS' | 'USERS';
